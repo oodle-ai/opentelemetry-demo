@@ -12,6 +12,10 @@
 
 ## Welcome to the OpenTelemetry Astronomy Shop Demo
 
+> [!NOTE]
+> This repository is a fork of OpenTelemetry Demo to illustrate OTel integration
+> with [Oodle](https://oodle.ai/).
+
 This repository contains the OpenTelemetry Astronomy Shop, a microservice-based
 distributed system intended to illustrate the implementation of OpenTelemetry in
 a near real-world environment.
