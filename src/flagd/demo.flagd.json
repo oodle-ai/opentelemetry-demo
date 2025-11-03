@@ -8,7 +8,7 @@
         "on": true,
         "off": false
       },
-      "defaultVariant": "off"
+      "defaultVariant": "on"
     },
     "recommendationCacheFailure": {
       "description": "Fail recommendation service cache",
@@ -17,7 +17,7 @@
         "on": true,
         "off": false
       },
-      "defaultVariant": "off"
+      "defaultVariant": "on"
     },
     "adManualGc": {
       "description": "Triggers full manual garbage collections in the ad service",
