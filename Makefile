@@ -94,7 +94,16 @@ install-tools: $(MISSPELL)
 
 .PHONY: build
 build:
+# work with `service` or `SERVICE` as input
+ifdef SERVICE
+	service := $(SERVICE)
+endif
+
+ifdef service
+	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) build $(DOCKER_COMPOSE_BUILD_ARGS) $(service)
+else
 	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) build $(DOCKER_COMPOSE_BUILD_ARGS)
+endif
 
 .PHONY: build-and-push
 build-and-push:
@@ -243,6 +252,39 @@ ifdef service
 	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) rm --force $(service)
 	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) create $(service)
 	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) start $(service)
+else
+	@echo "Please provide a service name using `service=[service name]` or `SERVICE=[service name]`"
+endif
+
+# Use to redeploy a service to minikube by updating the image
+# Example: make minikube-redeploy service=cart
+.PHONY: minikube-redeploy
+minikube-redeploy:
+# work with `service` or `SERVICE` as input
+ifdef SERVICE
+	service := $(SERVICE)
+endif
+
+ifdef service
+	@echo "Building $(service) image..."
+	@$(MAKE) build service=$(service)
+	@echo "Loading image into minikube Docker daemon..."
+	@minikube image load ghcr.io/open-telemetry/demo:latest-$(service) || \
+	(docker save ghcr.io/open-telemetry/demo:latest-$(service) -o /tmp/$(service)-$$(date +%s).tar && \
+	 minikube image load /tmp/$(service)-*.tar && \
+	 rm -f /tmp/$(service)-*.tar)
+	@echo "Creating unique tag with timestamp to force minikube to use new image..."
+	@TIMESTAMP=$$(date +%s); \
+	UNIQUE_TAG="latest-$(service)-$$TIMESTAMP"; \
+	echo "Tagging image in minikube as: $$UNIQUE_TAG"; \
+	eval $$(minikube docker-env) && docker tag ghcr.io/open-telemetry/demo:latest-$(service) ghcr.io/open-telemetry/demo:$$UNIQUE_TAG; \
+	echo "Setting deployment to use unique tag: $$UNIQUE_TAG"; \
+	kubectl set image deployment/$(service) $(service)=ghcr.io/open-telemetry/demo:$$UNIQUE_TAG -n oodle-otel-demo; \
+	echo "Setting imagePullPolicy to Never (using local minikube image)..."; \
+	kubectl patch deployment $(service) -n oodle-otel-demo -p '{"spec":{"template":{"spec":{"containers":[{"name":"$(service)","imagePullPolicy":"Never"}]}}}}' || true; \
+	echo "Redeploying $(service) service to minikube..."; \
+	kubectl rollout restart deployment/$(service) -n oodle-otel-demo; \
+	kubectl rollout status deployment/$(service) -n oodle-otel-demo --timeout=60s || echo "Waiting for deployment to complete..."
 else
 	@echo "Please provide a service name using `service=[service name]` or `SERVICE=[service name]`"
 endif
