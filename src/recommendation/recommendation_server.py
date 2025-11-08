@@ -19,6 +19,7 @@ from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.resources import Resource
+from opentelemetry.metrics import CallbackOptions, Observation
 
 from openfeature import api
 from openfeature.contrib.provider.flagd import FlagdProvider
@@ -38,6 +39,7 @@ from metrics import (
 
 cached_ids = []
 first_run = True
+MAX_CACHE_SIZE = 10000  # Maximum number of items in cache to prevent OOM
 
 class RecommendationService(demo_pb2_grpc.RecommendationServiceServicer):
     def ListRecommendations(self, request, context):
@@ -74,7 +76,7 @@ def get_product_list(request_product_ids):
         request_product_ids_str = ''.join(request_product_ids)
         request_product_ids = request_product_ids_str.split(',')
 
-        # Feature flag scenario - Cache Leak
+        # Feature flag scenario - Cache Leak (with size limit to prevent OOM)
         if check_feature_flag("recommendationCacheFailure"):
             span.set_attribute("app.recommendation.cache_enabled", True)
             if random.random() < 0.5 or first_run:
@@ -83,8 +85,19 @@ def get_product_list(request_product_ids):
                 logger.info("get_product_list: cache miss")
                 cat_response = product_catalog_stub.ListProducts(demo_pb2.Empty())
                 response_ids = [x.id for x in cat_response.products]
+                # Add new products to cache
                 cached_ids = cached_ids + response_ids
-                cached_ids = cached_ids + cached_ids[:len(cached_ids) // 4]
+                # Simulate cache leak by duplicating some entries (but limit total size)
+                additional_entries = cached_ids[:len(cached_ids) // 4]
+                cached_ids = cached_ids + additional_entries
+                # Enforce maximum cache size to prevent OOM - use FIFO eviction
+                if len(cached_ids) > MAX_CACHE_SIZE:
+                    # Remove oldest entries (FIFO)
+                    excess = len(cached_ids) - MAX_CACHE_SIZE
+                    cached_ids = cached_ids[excess:]
+                    logger.warning(f"get_product_list: cache size limit reached, evicted {excess} oldest entries")
+                # Cache size is automatically tracked via ObservableGauge callback
+                span.set_attribute("app.cache.size", len(cached_ids))
                 product_ids = cached_ids
             else:
                 span.set_attribute("app.cache_hit", True)
@@ -134,7 +147,13 @@ if __name__ == "__main__":
     # Initialize Traces and Metrics
     tracer = trace.get_tracer_provider().get_tracer(service_name)
     meter = metrics.get_meter_provider().get_meter(service_name)
-    rec_svc_metrics = init_metrics(meter)
+    
+    # Create callback for cache size observable gauge
+    def get_cache_size(options: CallbackOptions) -> list[Observation]:
+        """Callback function to return current cache size for ObservableGauge"""
+        return [Observation(len(cached_ids), {})]
+    
+    rec_svc_metrics = init_metrics(meter, cache_size_callback=get_cache_size)
 
     # Initialize Logs
     logger_provider = LoggerProvider(
