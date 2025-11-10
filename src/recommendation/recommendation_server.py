@@ -38,9 +38,6 @@ from metrics import (
 
 cached_ids = []
 first_run = True
-# Maximum cache size to prevent unbounded memory growth
-# Set to a reasonable limit based on expected product catalog size
-MAX_CACHE_SIZE = 10000
 
 class RecommendationService(demo_pb2_grpc.RecommendationServiceServicer):
     def ListRecommendations(self, request, context):
@@ -77,7 +74,7 @@ def get_product_list(request_product_ids):
         request_product_ids_str = ''.join(request_product_ids)
         request_product_ids = request_product_ids_str.split(',')
 
-        # Feature flag scenario - Cache Leak (Fixed: prevents unbounded growth)
+        # Feature flag scenario - Cache Leak
         if check_feature_flag("recommendationCacheFailure"):
             span.set_attribute("app.recommendation.cache_enabled", True)
             if random.random() < 0.5 or first_run:
@@ -86,28 +83,32 @@ def get_product_list(request_product_ids):
                 logger.info("get_product_list: cache miss")
                 cat_response = product_catalog_stub.ListProducts(demo_pb2.Empty())
                 response_ids = [x.id for x in cat_response.products]
-                
-                # Add new product IDs to cache, avoiding duplicates
-                # Maintain order for proper FIFO eviction
-                existing_ids_set = set(cached_ids)
-                for product_id in response_ids:
-                    if product_id not in existing_ids_set:
-                        cached_ids.append(product_id)
-                        existing_ids_set.add(product_id)
-                
-                # Enforce maximum cache size to prevent memory exhaustion
-                # If cache exceeds limit, remove oldest items (FIFO eviction)
-                if len(cached_ids) > MAX_CACHE_SIZE:
-                    logger.warning(f"Cache size ({len(cached_ids)}) exceeds limit ({MAX_CACHE_SIZE}), truncating to prevent memory issues")
-                    cached_ids = cached_ids[-MAX_CACHE_SIZE:]
-                    span.set_attribute("app.cache.truncated", True)
-                
-                span.set_attribute("app.cache.size", len(cached_ids))
+                # Fixed: Remove the exponential growth bug that was causing memory leaks
+                # Original bug: cached_ids = cached_ids + cached_ids[:len(cached_ids) // 4]
+                # This was causing the cache to grow exponentially, leading to OOM kills
+                cached_ids = cached_ids + response_ids
+                # Limit cache size to prevent unbounded growth
+                max_cache_size = 1000
+                if len(cached_ids) > max_cache_size:
+                    cached_ids = cached_ids[-max_cache_size:]
+                new_cache_size = len(cached_ids)
+                # Record cache size metric
+                rec_svc_metrics["app_recommendation_cache_size"].record(
+                    new_cache_size, 
+                    {"cache.operation": "update", "cache.enabled": "true"}
+                )
+                span.set_attribute("app.recommendation.cache_size", new_cache_size)
                 product_ids = cached_ids
             else:
                 span.set_attribute("app.cache_hit", True)
                 logger.info("get_product_list: cache hit")
-                span.set_attribute("app.cache.size", len(cached_ids))
+                cache_size = len(cached_ids)
+                # Record cache size metric
+                rec_svc_metrics["app_recommendation_cache_size"].record(
+                    cache_size, 
+                    {"cache.operation": "hit", "cache.enabled": "true"}
+                )
+                span.set_attribute("app.recommendation.cache_size", cache_size)
                 product_ids = cached_ids
         else:
             span.set_attribute("app.recommendation.cache_enabled", False)
@@ -153,14 +154,7 @@ if __name__ == "__main__":
     # Initialize Traces and Metrics
     tracer = trace.get_tracer_provider().get_tracer(service_name)
     meter = metrics.get_meter_provider().get_meter(service_name)
-    
-    # Create callback for cache size observable gauge
-    def get_cache_size_callback(options):
-        """Callback function to report current cache size"""
-        cache_size = len(cached_ids)
-        yield metrics.Observation(cache_size)
-    
-    rec_svc_metrics = init_metrics(meter, cache_size_callback=get_cache_size_callback)
+    rec_svc_metrics = init_metrics(meter)
 
     # Initialize Logs
     logger_provider = LoggerProvider(
