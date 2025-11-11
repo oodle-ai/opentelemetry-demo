@@ -1,0 +1,131 @@
+---
+# ConfigMap for OpenSearch Dashboards configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opensearch-dashboards-config
+  namespace: oodle-otel-demo
+  labels:
+    app.kubernetes.io/name: opensearch-dashboards
+    app.kubernetes.io/instance: opentelemetry-demo
+    app.kubernetes.io/version: "3.2.0"
+    app.kubernetes.io/component: opensearch-dashboards
+data:
+  opensearch_dashboards.yml: |
+    server.name: opensearch-dashboards
+    server.host: "0.0.0.0"
+    server.port: 5601
+    
+    # OpenSearch connection (HTTP since security is disabled)
+    opensearch.hosts: ["http://opensearch:9200"]
+---
+# Service for OpenSearch Dashboards
+apiVersion: v1
+kind: Service
+metadata:
+  name: opensearch-dashboards
+  namespace: oodle-otel-demo
+  labels:
+    app.kubernetes.io/name: opensearch-dashboards
+    app.kubernetes.io/instance: opentelemetry-demo
+    app.kubernetes.io/version: "3.2.0"
+    app.kubernetes.io/component: opensearch-dashboards
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 5601
+      targetPort: 5601
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: opensearch-dashboards
+    app.kubernetes.io/instance: opentelemetry-demo
+---
+# Deployment for OpenSearch Dashboards
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opensearch-dashboards
+  namespace: oodle-otel-demo
+  labels:
+    app.kubernetes.io/name: opensearch-dashboards
+    app.kubernetes.io/instance: opentelemetry-demo
+    app.kubernetes.io/version: "3.2.0"
+    app.kubernetes.io/component: opensearch-dashboards
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opensearch-dashboards
+      app.kubernetes.io/instance: opentelemetry-demo
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: opensearch-dashboards
+        app.kubernetes.io/instance: opentelemetry-demo
+        app.kubernetes.io/version: "3.2.0"
+        app.kubernetes.io/component: opensearch-dashboards
+    spec:
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+        runAsNonRoot: true
+      containers:
+        - name: opensearch-dashboards
+          image: opensearchproject/opensearch-dashboards:3.2.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            runAsUser: 1000
+          env:
+            - name: OPENSEARCH_HOSTS
+              value: "http://opensearch:9200"
+            - name: SERVER_HOST
+              value: "0.0.0.0"
+            - name: SERVER_PORT
+              value: "5601"
+            - name: DISABLE_SECURITY_DASHBOARDS_PLUGIN
+              value: "true"
+          ports:
+            - name: http
+              containerPort: 5601
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /api/status
+              port: 5601
+              scheme: HTTP
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/status
+              port: 5601
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            limits:
+              memory: 512Mi
+              cpu: 500m
+            requests:
+              memory: 256Mi
+              cpu: 100m
+          volumeMounts:
+            - name: config
+              mountPath: /usr/share/opensearch-dashboards/config/opensearch_dashboards.yml
+              subPath: opensearch_dashboards.yml
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: opensearch-dashboards-config
+      restartPolicy: Always
+
