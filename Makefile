@@ -22,6 +22,9 @@ ifeq ($(shell uname -m),arm64)
 	endif
 endif
 
+# Untracked local secrets (OODLE_INSTANCE, OODLE_API_KEY); loaded last so it wins, skipped if absent
+DOCKER_COMPOSE_ENV+= $(if $(wildcard .env.oodle),--env-file .env.oodle)
+
 # see https://github.com/open-telemetry/build-tools/releases for semconvgen updates
 # Keep links in semantic_conventions/README.md and .vscode/settings.json in sync!
 SEMCONVGEN_VERSION=0.11.0
